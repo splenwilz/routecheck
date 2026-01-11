@@ -99,7 +99,63 @@ func validateSpec(spec *Spec) error {
 		}
 	}
 
+	// Check for unresolved TODO placeholders
+	if todos := findTODOs(spec); len(todos) > 0 {
+		return fmt.Errorf("lifecycle spec contains unresolved TODOs:\n%s\n\nPlease fill in all TODO fields before running lifecycle tests", strings.Join(todos, "\n"))
+	}
+
 	return nil
+}
+
+// findTODOs finds all TODO placeholders in the spec.
+// Returns a list of locations where TODOs were found.
+func findTODOs(spec *Spec) []string {
+	var todos []string
+
+	for _, lc := range spec.Lifecycles {
+		// Check description
+		if strings.Contains(lc.Description, "TODO") {
+			todos = append(todos, fmt.Sprintf("  %s.description: contains TODO", lc.Name))
+		}
+
+		// Check steps
+		if lc.Create != nil {
+			todos = append(todos, findStepTODOs(lc.Name, "create", lc.Create)...)
+		}
+		if lc.Read != nil {
+			todos = append(todos, findStepTODOs(lc.Name, "read", lc.Read)...)
+		}
+		if lc.Update != nil {
+			todos = append(todos, findStepTODOs(lc.Name, "update", lc.Update)...)
+		}
+		if lc.Cleanup != nil {
+			todos = append(todos, findStepTODOs(lc.Name, "cleanup", lc.Cleanup)...)
+		}
+	}
+
+	return todos
+}
+
+// findStepTODOs finds TODO placeholders in a step.
+func findStepTODOs(lifecycleName, stepName string, step *Step) []string {
+	var todos []string
+	prefix := fmt.Sprintf("  %s.%s", lifecycleName, stepName)
+
+	// Check body fields for TODO values
+	for key, value := range step.Body {
+		if str, ok := value.(string); ok && str == "TODO" {
+			todos = append(todos, fmt.Sprintf("%s.body.%s: \"TODO\"", prefix, key))
+		}
+	}
+
+	// Check capture paths for TODO
+	for key, path := range step.Capture {
+		if strings.Contains(path, "TODO") {
+			todos = append(todos, fmt.Sprintf("%s.capture.%s: contains TODO", prefix, key))
+		}
+	}
+
+	return todos
 }
 
 // validateLifecycle validates a single lifecycle definition.

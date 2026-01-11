@@ -18,6 +18,7 @@ import (
 	"github.com/splenwilz/routecheck/internal/lifecycle"
 	"github.com/splenwilz/routecheck/internal/normalize"
 	"github.com/splenwilz/routecheck/internal/reporter"
+	"github.com/splenwilz/routecheck/internal/scaffold"
 	"github.com/splenwilz/routecheck/pkg/auth"
 	"github.com/splenwilz/routecheck/pkg/endpoint"
 )
@@ -44,6 +45,10 @@ func Run(args []string) int {
 		return runDiscover(args[1:])
 	case "validate":
 		return runValidate(args[1:])
+	case "scaffold":
+		return runScaffold(args[1:])
+	case "explain":
+		return runExplain(args[1:])
 	case "version", "--version", "-v":
 		fmt.Printf("routecheck %s\n", version)
 		return exitOK
@@ -67,6 +72,8 @@ Commands:
   discover  List API endpoints without executing requests
   probe     Discover and test API endpoints (safe methods only)
   validate  Test all endpoints (use --unsafe for mutations)
+  scaffold  Generate draft lifecycle specs from OpenAPI
+  explain   Explain lifecycle specs without executing
   version   Print version information
   help      Show this help message
 
@@ -74,6 +81,8 @@ Examples:
   routecheck discover https://api.example.com
   routecheck probe https://api.example.com
   routecheck validate --unsafe https://api.example.com
+  routecheck scaffold lifecycle --openapi ./openapi.yaml --resource users
+  routecheck explain lifecycle --file ./lifecycles.yaml
 
 Use "routecheck <command> --help" for more information about a command.`)
 }
@@ -425,6 +434,20 @@ Standard endpoint discovery is not used in lifecycle mode.`)
 			fmt.Fprintln(os.Stderr, "note: --unsafe is redundant with --enable-lifecycle (lifecycle mode always performs mutations)")
 		}
 
+		// First, lint the file for better error messages
+		lintResult, err := lifecycle.LintFile(*lifecycleFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return exitError
+		}
+
+		// Show detailed lint issues if any
+		if lintResult.HasIssues() {
+			fmt.Fprint(os.Stderr, lintResult.FormatIssues())
+			fmt.Fprintln(os.Stderr, "Fix the issues above before running lifecycle tests.")
+			return exitError
+		}
+
 		// Load and validate lifecycle spec
 		spec, err := lifecycle.LoadSpec(*lifecycleFile)
 		if err != nil {
@@ -433,6 +456,11 @@ Standard endpoint discovery is not used in lifecycle mode.`)
 		}
 
 		fmt.Fprintf(os.Stderr, "Loaded %d lifecycle(s) from %s\n", len(spec.Lifecycles), *lifecycleFile)
+		fmt.Fprintln(os.Stderr, "")
+
+		// Show pre-execution summary
+		explanation := lifecycle.Explain(spec, *lifecycleFile)
+		fmt.Fprint(os.Stderr, explanation.FormatPreExecutionSummary())
 		fmt.Fprintln(os.Stderr, "")
 
 		// Execute lifecycle testing
@@ -920,5 +948,242 @@ func executeLifecycleCreate(spec *lifecycle.Spec, baseURL string, timeout time.D
 	if failedLifecycles > 0 {
 		return exitError
 	}
+	return exitOK
+}
+
+// runScaffold implements the scaffold command.
+// It generates draft lifecycle specs from OpenAPI.
+func runScaffold(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, `Usage: routecheck scaffold <subcommand> [options]
+
+Subcommands:
+  lifecycle  Generate draft lifecycle spec from OpenAPI
+
+Example:
+  routecheck scaffold lifecycle --openapi ./openapi.yaml --resource users`)
+		return exitError
+	}
+
+	switch args[0] {
+	case "lifecycle":
+		return runScaffoldLifecycle(args[1:])
+	case "help", "--help", "-h":
+		fmt.Fprintln(os.Stderr, `Usage: routecheck scaffold <subcommand> [options]
+
+Subcommands:
+  lifecycle  Generate draft lifecycle spec from OpenAPI
+
+Example:
+  routecheck scaffold lifecycle --openapi ./openapi.yaml --resource users`)
+		return exitOK
+	default:
+		fmt.Fprintf(os.Stderr, "unknown scaffold subcommand: %s\n", args[0])
+		return exitError
+	}
+}
+
+// runScaffoldLifecycle generates a draft lifecycle spec from OpenAPI.
+func runScaffoldLifecycle(args []string) int {
+	fs := flag.NewFlagSet("scaffold lifecycle", flag.ContinueOnError)
+
+	openAPIPath := fs.String("openapi", "", "Path or URL to OpenAPI spec (required)")
+	resourceName := fs.String("resource", "", "Resource name to scaffold (e.g., users, products)")
+	all := fs.Bool("all", false, "Scaffold all detected resources")
+	outputPath := fs.String("output", "lifecycles.yaml", "Output file path")
+
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, `Usage: routecheck scaffold lifecycle [options]
+
+Generate a draft lifecycle spec from an OpenAPI specification.
+
+The generated file contains TODO placeholders and REQUIRES HUMAN REVIEW
+before use. It will NOT execute without filling in the required values.
+
+Options:`)
+		fs.PrintDefaults()
+		fmt.Fprintln(os.Stderr, `
+Examples:
+  # Scaffold a specific resource
+  routecheck scaffold lifecycle --openapi ./openapi.yaml --resource users
+
+  # Scaffold all detected resources
+  routecheck scaffold lifecycle --openapi ./openapi.yaml --all
+
+  # Custom output file
+  routecheck scaffold lifecycle --openapi ./openapi.yaml --resource users --output ./test/users.yaml`)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return exitOK
+		}
+		return exitError
+	}
+
+	// Build config
+	cfg := scaffold.Config{
+		OpenAPIPath:  *openAPIPath,
+		ResourceName: *resourceName,
+		All:          *all,
+		OutputPath:   *outputPath,
+	}
+
+	// Run scaffold
+	result, err := scaffold.Scaffold(cfg)
+	if err != nil {
+		// Check for specific error types to provide better messages
+		errStr := err.Error()
+		if strings.Contains(errStr, "specify --resource") {
+			// Multiple resources detected
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return exitError
+		}
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return exitError
+	}
+
+	// Write output file
+	if err := os.WriteFile(*outputPath, []byte(result.YAML), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "error: failed to write output file: %v\n", err)
+		return exitError
+	}
+
+	// Print summary
+	fmt.Fprintf(os.Stderr, "Generated %s\n", *outputPath)
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "Resources scaffolded:\n")
+	for _, r := range result.Resources {
+		steps := []string{"CREATE"}
+		if r.ReadEndpoint != nil {
+			steps = append(steps, "READ")
+		}
+		steps = append(steps, "CLEANUP")
+		fmt.Fprintf(os.Stderr, "  • %s (%s)\n", r.Name, strings.Join(steps, " → "))
+	}
+
+	// Print warnings
+	if len(result.Warnings) > 0 {
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Warnings:")
+		for _, w := range result.Warnings {
+			fmt.Fprintf(os.Stderr, "  ⚠ %s\n", w)
+		}
+	}
+
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Next steps:")
+	fmt.Fprintln(os.Stderr, "  1. Review and fill in TODO placeholders in", *outputPath)
+	fmt.Fprintln(os.Stderr, "  2. Run: routecheck validate --enable-lifecycle --ack-mutations \\")
+	fmt.Fprintf(os.Stderr, "       --lifecycle-file %s <base-url>\n", *outputPath)
+
+	return exitOK
+}
+
+// runExplain implements the explain command.
+// It explains lifecycle specs without executing them.
+func runExplain(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, `Usage: routecheck explain <subcommand> [options]
+
+Subcommands:
+  lifecycle  Explain a lifecycle spec file
+
+Example:
+  routecheck explain lifecycle --file ./lifecycles.yaml`)
+		return exitError
+	}
+
+	switch args[0] {
+	case "lifecycle":
+		return runExplainLifecycle(args[1:])
+	case "help", "--help", "-h":
+		fmt.Fprintln(os.Stderr, `Usage: routecheck explain <subcommand> [options]
+
+Subcommands:
+  lifecycle  Explain a lifecycle spec file
+
+Example:
+  routecheck explain lifecycle --file ./lifecycles.yaml`)
+		return exitOK
+	default:
+		fmt.Fprintf(os.Stderr, "unknown explain subcommand: %s\n", args[0])
+		return exitError
+	}
+}
+
+// runExplainLifecycle explains a lifecycle spec file.
+func runExplainLifecycle(args []string) int {
+	fs := flag.NewFlagSet("explain lifecycle", flag.ContinueOnError)
+
+	filePath := fs.String("file", "", "Path to lifecycle spec file (required)")
+	lint := fs.Bool("lint", false, "Only check for issues, don't show full explanation")
+
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, `Usage: routecheck explain lifecycle [options]
+
+Explain a lifecycle spec file without executing it.
+
+This command helps you understand what a lifecycle spec will do before running it.
+It shows the execution flow, captured variables, and any potential issues.
+
+Options:`)
+		fs.PrintDefaults()
+		fmt.Fprintln(os.Stderr, `
+Examples:
+  # Full explanation
+  routecheck explain lifecycle --file ./lifecycles.yaml
+
+  # Lint only (check for issues)
+  routecheck explain lifecycle --file ./lifecycles.yaml --lint`)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return exitOK
+		}
+		return exitError
+	}
+
+	if *filePath == "" {
+		fmt.Fprintln(os.Stderr, "error: --file is required")
+		return exitError
+	}
+
+	// First, lint the file
+	lintResult, err := lifecycle.LintFile(*filePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return exitError
+	}
+
+	// If lint-only mode, just show lint results
+	if *lint {
+		if lintResult.HasIssues() {
+			fmt.Fprint(os.Stderr, lintResult.FormatIssues())
+			return exitError
+		}
+		fmt.Fprintf(os.Stderr, "✓ No issues found in %s\n", *filePath)
+		return exitOK
+	}
+
+	// Show lint issues if any
+	if lintResult.HasIssues() {
+		fmt.Fprint(os.Stderr, lintResult.FormatIssues())
+		fmt.Fprintln(os.Stderr, "Fix the issues above before running lifecycle tests.")
+		return exitError
+	}
+
+	// Load the spec for full explanation
+	spec, err := lifecycle.LoadSpec(*filePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return exitError
+	}
+
+	// Generate and print explanation
+	explanation := lifecycle.Explain(spec, *filePath)
+	fmt.Print(explanation.FormatExplanation())
+
 	return exitOK
 }
