@@ -1,0 +1,22 @@
+# Binary
+routecheck
+routecheck.exe
+
+# Claude Code
+.claude/
+/docs
+
+# Go
+*.test
+*.out
+coverage.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

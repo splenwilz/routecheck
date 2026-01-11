@@ -1,0 +1,46 @@
+base_url: https://httpbin.org
+endpoints:
+  # Safe endpoints (GET)
+  - method: GET
+    path: /get
+    params:
+      query:
+        foo: string
+        bar: integer
+    expected_status: [200]
+
+  - method: GET
+    path: /status/{code}
+    params:
+      path:
+        code: integer
+    expected_status: [200, 201, 204]
+
+  - method: GET
+    path: /headers
+    headers:
+      X-Custom-Header: test-value
+    expected_status: [200]
+
+  # Unsafe endpoints (POST, PUT, DELETE)
+  - method: POST
+    path: /post
+    body:
+      content_type: application/json
+      example:
+        name: John Doe
+        email: john@example.com
+    expected_status: [200]
+
+  - method: PUT
+    path: /put
+    body:
+      content_type: application/json
+      example:
+        id: 123
+        updated: true
+    expected_status: [200]
+
+  - method: DELETE
+    path: /delete
+    expected_status: [200]

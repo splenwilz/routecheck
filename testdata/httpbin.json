@@ -1,0 +1,15 @@
+{
+  "base_url": "https://httpbin.org",
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/json",
+      "expected_status": [200]
+    },
+    {
+      "method": "GET",
+      "path": "/uuid",
+      "expected_status": [200]
+    }
+  ]
+}
