@@ -214,12 +214,85 @@ Options:
   --verbose      Enable verbose output
 ```
 
+## Lifecycle Testing (v2)
+
+Lifecycle testing validates full CRUD sequences: CREATE → READ → UPDATE → CLEANUP.
+
+### When to use lifecycle testing
+
+Use lifecycle testing when you need to:
+
+- Verify a complete resource workflow (create, read, update, delete)
+- Test dependent operations where later steps use IDs from earlier steps
+- Ensure cleanup runs even when earlier steps fail
+
+### Lifecycle spec format
+
+```yaml
+lifecycles:
+  - name: user-lifecycle
+    description: Test user CRUD operations
+    create:
+      method: POST
+      path: /users
+      body:
+        name: "Test User"
+        email: "test@example.com"
+      expected_status: [201]
+      capture:
+        user_id: "$.id"       # JSONPath to capture from response
+    read:                     # Optional
+      method: GET
+      path: /users/{{user_id}}
+      expected_status: [200]
+    update:                   # Optional
+      method: PUT
+      path: /users/{{user_id}}
+      body:
+        name: "Updated User"
+      expected_status: [200]
+    cleanup:
+      method: DELETE
+      path: /users/{{user_id}}
+      expected_status: [200, 204]
+```
+
+### Running lifecycle tests
+
+```bash
+routecheck validate \
+  --enable-lifecycle \
+  --ack-mutations \
+  --lifecycle-file ./lifecycles.yaml \
+  https://api.example.com
+```
+
+**Required flags:**
+- `--enable-lifecycle` - Enables lifecycle mode
+- `--ack-mutations` - Acknowledges that lifecycle testing creates real resources
+- `--lifecycle-file` - Path to lifecycle spec file
+
+### Safety guarantees
+
+1. **Explicit opt-in** - Requires both `--enable-lifecycle` and `--ack-mutations`
+2. **Prominent warnings** - Clear banner before execution
+3. **Cleanup always attempted** - Runs regardless of CREATE/READ/UPDATE failures
+4. **Orphaned resource warnings** - Clear notification if cleanup fails
+
+### Variable interpolation
+
+Capture values from responses and use them in subsequent steps:
+
+- **Capture**: Use JSONPath expressions (e.g., `$.id`, `$.data.user.id`)
+- **Interpolate**: Use `{{variable}}` syntax in paths and bodies
+
 ## Exit Codes
 
 | Code | Meaning                |
 |------|------------------------|
 | 0    | All tests passed       |
 | 1    | One or more tests failed or error occurred |
+| 2    | Lifecycle cleanup failed - orphaned resources may exist |
 
 ## Output Formats
 

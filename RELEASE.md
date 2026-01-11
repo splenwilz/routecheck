@@ -1,6 +1,6 @@
-# Release Notes — v0.1.0
+# Release Notes — v2.0.0
 
-Initial release of routecheck.
+Lifecycle testing release.
 
 ## Supported Platforms
 
@@ -57,14 +57,18 @@ Endpoints with path parameters like `/users/{id}` will likely return 404 because
 
 To test specific resources, use a manual endpoint map with known IDs.
 
-### Stateless Testing Only
+### Stateless Testing (Default Mode)
 
-Each request is independent. routecheck does not:
-- Extract values from responses for use in subsequent requests
-- Support create → read → update → delete sequences
-- Maintain session state between requests
+In default mode (`probe` / `validate`), each request is independent. For dependent request sequences, use lifecycle mode.
 
-For lifecycle testing, use integration test frameworks.
+### Lifecycle Testing (v2)
+
+Lifecycle mode supports CREATE → READ → UPDATE → CLEANUP sequences:
+- Extract values from responses (JSONPath capture)
+- Use captured values in subsequent requests (path interpolation)
+- Automatic cleanup even when earlier steps fail
+
+See README.md for lifecycle spec format and examples.
 
 ### Parameter Generation
 
@@ -110,7 +114,31 @@ routecheck follows semantic versioning, but pre-1.0 releases may include breakin
 - Improved error messages
 - Bug fixes that change behavior to match documentation
 
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | All tests passed |
+| 1 | One or more tests failed |
+| 2 | Lifecycle cleanup failed (orphaned resources may exist) |
+
+Exit code 2 only applies to lifecycle mode. In CI, treat exit code 2 as requiring manual intervention.
+
 ## Changelog
+
+### v2.0.0
+
+Lifecycle testing release.
+
+- Lifecycle testing mode (`--enable-lifecycle`)
+- Full CRUD sequences: CREATE → READ → UPDATE → CLEANUP
+- JSONPath capture from responses (e.g., `$.id`, `$.data.user.id`)
+- Path interpolation with `{{variable}}` syntax
+- Automatic cleanup regardless of step failures
+- Orphaned resource detection and warnings
+- Exit code 2 for cleanup failures
+- Invalid flag combination validation
+- Prominent lifecycle mode warning banner
 
 ### v0.1.0
 

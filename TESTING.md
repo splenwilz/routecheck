@@ -69,40 +69,110 @@ routecheck performs **stateless testing**. Each request is independent.
 - Testing authentication flows
 - Verifying side effects
 
-## Why Lifecycle Testing is Out of Scope (v1)
+## Lifecycle Testing (v2)
 
-**Lifecycle testing** means testing sequences like:
+**Lifecycle testing** tests complete CRUD sequences:
 1. Create a user (POST /users)
 2. Read that user (GET /users/{created_id})
 3. Update the user (PUT /users/{created_id})
 4. Delete the user (DELETE /users/{created_id})
 
-### Why we don't support this (yet)
+### When to use lifecycle testing
 
-1. **Complexity explosion** - Lifecycle tests require:
-   - Extracting values from responses
-   - Managing state between requests
-   - Handling cleanup on failure
-   - Defining dependency graphs
+Use lifecycle mode when you need to:
 
-2. **Diminishing returns** - Once you need lifecycle testing, you're typically better served by:
-   - Integration test frameworks (pytest, Jest)
-   - Contract testing tools (Pact)
-   - End-to-end test suites
+- Verify complete resource workflows work end-to-end
+- Test that created resources can be read, updated, and deleted
+- Capture IDs from CREATE and use them in subsequent steps
+- Ensure cleanup runs even if earlier steps fail
 
-3. **Scope creep** - routecheck's value is simplicity:
-   - One binary, no dependencies
-   - Point at an API, get results
-   - Works with any REST API
+### When to use stateless testing instead
 
-### When to use other tools
-
-| Use Case | Recommended Tool |
-|----------|-----------------|
-| Routes respond correctly | routecheck |
-| Business logic works | Integration tests |
-| Data flows correctly | Contract tests |
+| Use Case | Mode |
+|----------|------|
+| Routes respond correctly | `probe` / `validate` |
+| Smoke tests in CI | `probe` |
+| Full CRUD workflows | `validate --enable-lifecycle` |
+| Business logic | Integration tests (pytest, Jest) |
 | Full user journeys | E2E tests |
+
+### Lifecycle step execution order
+
+1. **CREATE** - Always runs first, captures values from response
+2. **READ** - Optional, runs after CREATE succeeds
+3. **UPDATE** - Optional, runs after READ (if defined) or CREATE
+4. **CLEANUP** - Always runs if CREATE executed, regardless of other failures
+
+### Handling failures
+
+- **CREATE fails**: CLEANUP still attempted (may fail if no captured ID)
+- **READ fails**: UPDATE and CLEANUP still run
+- **UPDATE fails**: CLEANUP still runs
+- **CLEANUP fails**: Orphaned resource warning displayed
+
+### Exit codes for lifecycle mode
+
+| Code | Meaning |
+|------|---------|
+| 0 | All lifecycles passed |
+| 1 | CREATE, READ, or UPDATE failed |
+| 2 | CLEANUP failed - orphaned resources may exist |
+
+### Example lifecycle spec
+
+```yaml
+lifecycles:
+  - name: user-crud
+    create:
+      method: POST
+      path: /users
+      body:
+        name: "Test User"
+      expected_status: [201]
+      capture:
+        user_id: "$.id"
+    read:
+      method: GET
+      path: /users/{{user_id}}
+      expected_status: [200]
+    update:
+      method: PUT
+      path: /users/{{user_id}}
+      body:
+        name: "Updated"
+      expected_status: [200]
+    cleanup:
+      method: DELETE
+      path: /users/{{user_id}}
+      expected_status: [204]
+```
+
+### Running lifecycle tests
+
+```bash
+routecheck validate \
+  --enable-lifecycle \
+  --ack-mutations \
+  --lifecycle-file ./lifecycles.yaml \
+  https://api.example.com
+```
+
+### CI integration for lifecycle tests
+
+```yaml
+- name: Lifecycle tests
+  run: |
+    routecheck validate \
+      --enable-lifecycle \
+      --ack-mutations \
+      --lifecycle-file ./lifecycles.yaml \
+      --auth "bearer:$API_TOKEN" \
+      https://api.staging.example.com
+  env:
+    API_TOKEN: ${{ secrets.API_TOKEN }}
+```
+
+**Important**: Monitor exit code 2 (cleanup failure) in CI - it indicates orphaned resources that may need manual cleanup.
 
 ## Expected Failures
 

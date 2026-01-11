@@ -1,0 +1,6 @@
+lifecycles:
+  - name: missing-create
+    cleanup:
+      method: DELETE
+      path: /api/v1/users/123
+      expected_status: [204]

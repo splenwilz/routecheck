@@ -1,0 +1,18 @@
+# Test lifecycle where CREATE fails
+# Cleanup should still be attempted
+lifecycles:
+  - name: httpbin-create-fail
+    description: Test cleanup after CREATE failure
+    create:
+      method: POST
+      path: /status/500
+      # httpbin /status/500 returns 500 Internal Server Error
+      body:
+        id: "test-456"
+      expected_status: [201]  # Expect 201 but will get 500
+      capture:
+        captured_id: "$.id"  # Won't be captured since response is empty
+    cleanup:
+      method: DELETE
+      path: /delete
+      expected_status: [200]

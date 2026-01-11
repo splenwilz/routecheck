@@ -1,0 +1,16 @@
+# Test lifecycle with expected failure - wrong status code
+lifecycles:
+  - name: httpbin-status-fail
+    description: Test that expects 201 but gets 200
+    create:
+      method: POST
+      path: /post
+      body:
+        test: "data"
+      expected_status: [201]  # httpbin returns 200, not 201
+      capture:
+        test_id: "$.json.test"
+    cleanup:
+      method: DELETE
+      path: /delete
+      expected_status: [200]

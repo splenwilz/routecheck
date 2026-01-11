@@ -1,0 +1,16 @@
+# Test lifecycle with capture failure - field doesn't exist
+lifecycles:
+  - name: httpbin-capture-fail
+    description: Test capture of non-existent field
+    create:
+      method: POST
+      path: /post
+      body:
+        test: "data"
+      expected_status: [200]
+      capture:
+        nonexistent: "$.nonexistent_field"  # This field won't exist
+    cleanup:
+      method: DELETE
+      path: /delete
+      expected_status: [200]

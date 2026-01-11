@@ -1,0 +1,7 @@
+lifecycles:
+  - name: missing-cleanup
+    create:
+      method: POST
+      path: /api/v1/users
+      capture:
+        user_id: "$.id"

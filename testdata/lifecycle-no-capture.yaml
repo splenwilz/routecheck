@@ -1,0 +1,8 @@
+lifecycles:
+  - name: missing-capture
+    create:
+      method: POST
+      path: /api/v1/users
+    cleanup:
+      method: DELETE
+      path: /api/v1/users/123

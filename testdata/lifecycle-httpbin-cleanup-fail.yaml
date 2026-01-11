@@ -1,0 +1,18 @@
+# Test lifecycle where cleanup fails (wrong expected status)
+lifecycles:
+  - name: httpbin-cleanup-fail
+    description: Test cleanup failure handling
+    create:
+      method: POST
+      path: /post
+      body:
+        id: "test-123"
+      expected_status: [200]
+      capture:
+        captured_id: "$.json.id"
+    cleanup:
+      method: DELETE
+      path: /status/403
+      # httpbin /status/403 returns 403 Forbidden
+      # But we expect 200, so cleanup will fail
+      expected_status: [200]

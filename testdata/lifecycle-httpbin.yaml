@@ -1,0 +1,23 @@
+# Test lifecycle using httpbin.org
+# httpbin's /post and /delete endpoints echo back request info
+lifecycles:
+  - name: httpbin-echo-test
+    description: Test CREATE and CLEANUP using httpbin echo endpoints
+    create:
+      method: POST
+      path: /post
+      body:
+        id: 12345
+        name: "routecheck-test"
+        email: "test@example.com"
+      expected_status: [200]
+      capture:
+        # httpbin echoes the JSON body in the "json" field
+        captured_id: "$.json.id"
+        captured_name: "$.json.name"
+    cleanup:
+      # httpbin /delete accepts any path - we use interpolation to show it works
+      # Note: /anything/{{captured_id}} would also work on httpbin
+      method: DELETE
+      path: /delete
+      expected_status: [200]

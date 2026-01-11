@@ -1,0 +1,27 @@
+# Test lifecycle where UPDATE fails but CLEANUP still executes
+# Verifies that UPDATE failures don't stop CLEANUP
+lifecycles:
+  - name: httpbin-update-fail
+    description: Test UPDATE failure doesn't stop CLEANUP
+    create:
+      method: POST
+      path: /post
+      body:
+        id: "test-789"
+      expected_status: [200]
+      capture:
+        resource_id: "$.json.id"
+    read:
+      method: GET
+      path: /get
+      expected_status: [200]
+    update:
+      # httpbin /status/500 returns 500 - this will fail
+      method: PUT
+      path: /status/500
+      expected_status: [200]  # Expect 200 but will get 500
+    cleanup:
+      # This should still run even after UPDATE fails
+      method: DELETE
+      path: /delete
+      expected_status: [200]

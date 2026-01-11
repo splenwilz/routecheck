@@ -1,0 +1,31 @@
+# Test lifecycle where READ fails but UPDATE and CLEANUP still execute
+# Verifies that READ failures don't stop subsequent steps
+lifecycles:
+  - name: httpbin-read-fail
+    description: Test READ failure doesn't stop UPDATE and CLEANUP
+    create:
+      method: POST
+      path: /post
+      body:
+        id: "test-456"
+      expected_status: [200]
+      capture:
+        resource_id: "$.json.id"
+    read:
+      # httpbin /status/404 returns 404 - this will fail
+      method: GET
+      path: /status/404
+      expected_status: [200]  # Expect 200 but will get 404
+    update:
+      # This should still run even after READ fails
+      method: PUT
+      path: /put
+      body:
+        id: "{{resource_id}}"
+        status: "updated"
+      expected_status: [200]
+    cleanup:
+      # This should still run even after READ fails
+      method: DELETE
+      path: /delete
+      expected_status: [200]

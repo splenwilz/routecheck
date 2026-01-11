@@ -15,6 +15,7 @@ import (
 	"github.com/splenwilz/routecheck/internal/analyzer"
 	"github.com/splenwilz/routecheck/internal/discovery"
 	"github.com/splenwilz/routecheck/internal/executor"
+	"github.com/splenwilz/routecheck/internal/lifecycle"
 	"github.com/splenwilz/routecheck/internal/normalize"
 	"github.com/splenwilz/routecheck/internal/reporter"
 	"github.com/splenwilz/routecheck/pkg/auth"
@@ -22,8 +23,9 @@ import (
 )
 
 const (
-	exitOK    = 0
-	exitError = 1
+	exitOK             = 0
+	exitError          = 1
+	exitCleanupFailure = 2 // Lifecycle cleanup failed - orphaned resources may exist
 )
 
 var version = "dev"
@@ -328,6 +330,11 @@ func runValidate(args []string) int {
 	concurrency := fs.Int("concurrency", 5, "Maximum concurrent requests")
 	unsafe := fs.Bool("unsafe", false, "Enable testing of unsafe methods (POST, PUT, PATCH, DELETE)")
 
+	// Lifecycle options (v2)
+	enableLifecycle := fs.Bool("enable-lifecycle", false, "Enable lifecycle testing (create/read/update/delete sequences)")
+	ackMutations := fs.Bool("ack-mutations", false, "Acknowledge that lifecycle testing will create resources and cleanup may fail")
+	lifecycleFile := fs.String("lifecycle-file", "", "Path to lifecycle spec file (required with --enable-lifecycle)")
+
 	// Authentication options
 	authFlag := fs.String("auth", "", "Authentication: bearer:<token>, api_key:<key>, or basic:<user>:<pass>")
 	authHeader := fs.String("auth-header", "", "Custom header name for API key auth (default: X-API-Key)")
@@ -342,6 +349,10 @@ func runValidate(args []string) int {
 Test API endpoints. Safe methods (GET, HEAD, OPTIONS) run by default.
 Use --unsafe to include mutation methods (POST, PUT, PATCH, DELETE).
 
+Lifecycle Testing (v2):
+  Use --enable-lifecycle with --ack-mutations and --lifecycle-file for CRUD sequences.
+  WARNING: Lifecycle testing creates real resources. Cleanup may fail.
+
 Options:`)
 		fs.PrintDefaults()
 		fmt.Fprintln(os.Stderr, `
@@ -349,7 +360,10 @@ Examples:
   routecheck validate https://api.example.com
   routecheck validate --unsafe https://api.example.com
   routecheck validate --map ./endpoints.yaml --unsafe https://api.example.com
-  routecheck validate --auth bearer:token https://api.example.com`)
+  routecheck validate --auth bearer:token https://api.example.com
+
+Lifecycle Examples:
+  routecheck validate --enable-lifecycle --ack-mutations --lifecycle-file ./lifecycles.yaml https://api.example.com`)
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -376,6 +390,61 @@ Examples:
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return exitError
 		}
+	}
+
+	// Validate lifecycle flags (Phase 0: validation only, no execution)
+	if *enableLifecycle {
+		// Require acknowledgement flag
+		if !*ackMutations {
+			fmt.Fprintln(os.Stderr, `error: --enable-lifecycle requires --ack-mutations flag
+
+Lifecycle testing creates real resources and cleanup may fail.
+Add --ack-mutations to acknowledge this risk.`)
+			return exitError
+		}
+
+		// Require lifecycle file
+		if *lifecycleFile == "" {
+			fmt.Fprintln(os.Stderr, `error: --enable-lifecycle requires --lifecycle-file
+
+Specify a lifecycle spec file with --lifecycle-file <path>`)
+			return exitError
+		}
+
+		// Refuse invalid flag combinations
+		if *openAPIPath != "" || *mapPath != "" {
+			fmt.Fprintln(os.Stderr, `error: --enable-lifecycle cannot be combined with --openapi or --map
+
+Lifecycle mode uses its own spec file (--lifecycle-file).
+Standard endpoint discovery is not used in lifecycle mode.`)
+			return exitError
+		}
+
+		// Warn about redundant flags
+		if *unsafe {
+			fmt.Fprintln(os.Stderr, "note: --unsafe is redundant with --enable-lifecycle (lifecycle mode always performs mutations)")
+		}
+
+		// Load and validate lifecycle spec
+		spec, err := lifecycle.LoadSpec(*lifecycleFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return exitError
+		}
+
+		fmt.Fprintf(os.Stderr, "Loaded %d lifecycle(s) from %s\n", len(spec.Lifecycles), *lifecycleFile)
+		fmt.Fprintln(os.Stderr, "")
+
+		// Execute lifecycle testing
+		return executeLifecycleCreate(spec, baseURL, time.Duration(*timeout)*time.Second, authProvider)
+	}
+
+	// Warn if lifecycle flags provided without --enable-lifecycle
+	if *ackMutations && !*enableLifecycle {
+		fmt.Fprintln(os.Stderr, "warning: --ack-mutations has no effect without --enable-lifecycle")
+	}
+	if *lifecycleFile != "" && !*enableLifecycle {
+		fmt.Fprintln(os.Stderr, "warning: --lifecycle-file has no effect without --enable-lifecycle")
 	}
 
 	// Create validate configuration
@@ -680,4 +749,176 @@ func parseAuth(authStr, headerName string) (auth.Provider, error) {
 	default:
 		return nil, fmt.Errorf("unknown auth type: %s (supported: bearer, api_key, basic)", authType)
 	}
+}
+
+// executeLifecycleCreate executes full lifecycle: CREATE → READ → UPDATE → CLEANUP.
+// Phase 3: All steps supported. READ and UPDATE are optional.
+//
+// Exit codes:
+//   - 0: All lifecycles passed
+//   - 1: One or more lifecycle steps failed (CREATE, READ, UPDATE expected status)
+//   - 2: Cleanup failed - orphaned resources may exist (requires manual cleanup)
+func executeLifecycleCreate(spec *lifecycle.Spec, baseURL string, timeout time.Duration, authProvider auth.Provider) int {
+	ctx := context.Background()
+
+	exec := lifecycle.NewExecutor(lifecycle.ExecutorConfig{
+		BaseURL: baseURL,
+		Timeout: timeout,
+		Auth:    authProvider,
+	})
+
+	// Print prominent warning banner
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "\033[43m\033[30m ⚠️  LIFECYCLE TESTING MODE \033[0m")
+	fmt.Fprintln(os.Stderr, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Fprintln(os.Stderr, "\033[33mWARNING: This mode creates REAL resources on the target system.\033[0m")
+	fmt.Fprintln(os.Stderr, "\033[33mCleanup is attempted but may fail, leaving orphaned resources.\033[0m")
+	fmt.Fprintln(os.Stderr, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Fprintln(os.Stderr, "")
+
+	// Track summary statistics
+	var totalLifecycles, passedLifecycles, failedLifecycles int
+	var cleanupFailures int
+	var orphanedResources []string
+
+	for _, lc := range spec.Lifecycles {
+		totalLifecycles++
+		fmt.Fprintf(os.Stderr, "Starting lifecycle: %s\n", lc.Name)
+
+		result := exec.Execute(ctx, &lc)
+
+		// Print each step result
+		for _, step := range result.Steps {
+			// Determine step success based on step name
+			var stepError error
+			switch step.StepName {
+			case "create":
+				stepError = result.CreateError
+			case "read":
+				stepError = result.ReadError
+			case "update":
+				stepError = result.UpdateError
+			case "cleanup":
+				stepError = result.CleanupError
+			}
+
+			statusIcon := "✓"
+			statusColor := "\033[32m" // green
+			if step.Error != nil || stepError != nil {
+				statusIcon = "✗"
+				statusColor = "\033[31m" // red
+			}
+
+			// Show actual path if different from template
+			displayPath := step.Path
+			if step.ActualPath != "" && step.ActualPath != step.Path {
+				displayPath = step.ActualPath
+			}
+
+			fmt.Fprintf(os.Stderr, "  %s%s\033[0m %s %s %s",
+				statusColor,
+				statusIcon,
+				strings.ToUpper(step.StepName),
+				step.Method,
+				displayPath,
+			)
+
+			if step.StatusCode > 0 {
+				fmt.Fprintf(os.Stderr, " [%d]", step.StatusCode)
+			}
+
+			if step.Duration > 0 {
+				fmt.Fprintf(os.Stderr, " (%s)", step.Duration.Round(time.Millisecond))
+			}
+
+			fmt.Fprintln(os.Stderr)
+
+			// Print step-level error if any
+			if step.Error != nil {
+				fmt.Fprintf(os.Stderr, "    Error: %v\n", step.Error)
+			}
+
+			// Print captured values (CREATE step only)
+			if len(step.Captured) > 0 {
+				fmt.Fprintln(os.Stderr, "    Captured:")
+				for name, value := range step.Captured {
+					displayValue := lifecycle.MaskValue(name, value)
+					fmt.Fprintf(os.Stderr, "      %s = %s\n", name, displayValue)
+				}
+			}
+		}
+
+		// Determine lifecycle outcome and print failure details
+		if result.HasError() {
+			failedLifecycles++
+
+			// Print all step errors
+			if result.CreateError != nil {
+				fmt.Fprintf(os.Stderr, "  \033[31m✗\033[0m CREATE FAILED: %v\n", result.CreateError)
+			}
+			if result.ReadError != nil {
+				fmt.Fprintf(os.Stderr, "  \033[31m✗\033[0m READ FAILED: %v\n", result.ReadError)
+			}
+			if result.UpdateError != nil {
+				fmt.Fprintf(os.Stderr, "  \033[31m✗\033[0m UPDATE FAILED: %v\n", result.UpdateError)
+			}
+			if result.CleanupError != nil {
+				cleanupFailures++
+				fmt.Fprintf(os.Stderr, "  \033[31m✗\033[0m CLEANUP FAILED: %v\n", result.CleanupError)
+
+				// Track orphaned resources
+				if len(result.CapturedVars) > 0 {
+					for name, value := range result.CapturedVars {
+						orphanedResources = append(orphanedResources,
+							fmt.Sprintf("%s: %s=%s", lc.Name, name, lifecycle.MaskValue(name, value)))
+					}
+				}
+			}
+		} else {
+			passedLifecycles++
+			fmt.Fprintln(os.Stderr, "  \033[32m✓\033[0m Lifecycle PASSED")
+		}
+
+		fmt.Fprintln(os.Stderr)
+	}
+
+	// Final summary
+	fmt.Fprintln(os.Stderr, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	if failedLifecycles == 0 {
+		fmt.Fprintln(os.Stderr, "\033[32mPASSED\033[0m")
+	} else {
+		fmt.Fprintln(os.Stderr, "\033[31mFAILED\033[0m")
+	}
+
+	fmt.Fprintf(os.Stderr, "Total: %d | Passed: %d | Failed: %d",
+		totalLifecycles, passedLifecycles, failedLifecycles)
+
+	if cleanupFailures > 0 {
+		fmt.Fprintf(os.Stderr, " | \033[31mCleanup failures: %d\033[0m", cleanupFailures)
+	}
+	fmt.Fprintln(os.Stderr)
+
+	// Warn about orphaned resources
+	if len(orphanedResources) > 0 {
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "\033[41m\033[37m ⚠️  ORPHANED RESOURCES \033[0m")
+		fmt.Fprintln(os.Stderr, "\033[33mThe following resources may not have been cleaned up:\033[0m")
+		for _, res := range orphanedResources {
+			fmt.Fprintf(os.Stderr, "   • %s\n", res)
+		}
+		fmt.Fprintln(os.Stderr, "\033[33mManual cleanup is required.\033[0m")
+	}
+
+	// Exit codes:
+	// 2 = cleanup failure (orphaned resources) - highest priority
+	// 1 = lifecycle failure (CREATE/READ/UPDATE failed)
+	// 0 = all passed
+	if cleanupFailures > 0 {
+		return exitCleanupFailure
+	}
+	if failedLifecycles > 0 {
+		return exitError
+	}
+	return exitOK
 }

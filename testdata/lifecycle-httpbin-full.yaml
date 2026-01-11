@@ -1,0 +1,34 @@
+# Full lifecycle test with all 4 steps: CREATE → READ → UPDATE → CLEANUP
+# Tests the Phase 3 implementation
+lifecycles:
+  - name: httpbin-full-lifecycle
+    description: Test all lifecycle steps using httpbin
+    create:
+      method: POST
+      path: /post
+      body:
+        id: "test-resource-123"
+        name: "routecheck-test"
+        status: "created"
+      expected_status: [200]
+      capture:
+        resource_id: "$.json.id"
+        resource_name: "$.json.name"
+    read:
+      # httpbin /anything echoes request info - simulates reading created resource
+      method: GET
+      path: /anything/{{resource_id}}
+      expected_status: [200]
+    update:
+      # httpbin /put echoes request info - simulates updating resource
+      method: PUT
+      path: /put
+      body:
+        id: "{{resource_id}}"
+        name: "updated-name"
+        status: "updated"
+      expected_status: [200]
+    cleanup:
+      method: DELETE
+      path: /anything/{{resource_id}}
+      expected_status: [200]

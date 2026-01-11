@@ -1,0 +1,20 @@
+lifecycles:
+  - name: user-crud
+    description: Test user creation and deletion
+    create:
+      method: POST
+      path: /api/v1/users
+      body:
+        name: "routecheck-test-user"
+        email: "test@example.com"
+      expected_status: [201]
+      capture:
+        user_id: "$.id"
+    read:
+      method: GET
+      path: /api/v1/users/{{user_id}}
+      expected_status: [200]
+    cleanup:
+      method: DELETE
+      path: /api/v1/users/{{user_id}}
+      expected_status: [200, 204, 404]

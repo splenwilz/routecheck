@@ -1,0 +1,20 @@
+# Test lifecycle with sensitive field masking
+lifecycles:
+  - name: httpbin-sensitive-test
+    description: Test that sensitive fields are masked in output
+    create:
+      method: POST
+      path: /post
+      body:
+        user_id: "user_12345"
+        api_token: "secret_token_abc123xyz789"
+        password: "mysecretpassword"
+      expected_status: [200]
+      capture:
+        user_id: "$.json.user_id"
+        api_token: "$.json.api_token"     # Should be masked
+        password: "$.json.password"        # Should be masked
+    cleanup:
+      method: DELETE
+      path: /delete
+      expected_status: [200]

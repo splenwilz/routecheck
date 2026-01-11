@@ -1,0 +1,18 @@
+# Test lifecycle where capture fails and cleanup needs interpolation
+lifecycles:
+  - name: httpbin-no-capture
+    description: Test cleanup when capture failed
+    create:
+      method: POST
+      path: /post
+      body:
+        data: "test"
+      expected_status: [200]
+      capture:
+        # This will fail - no 'id' field in response
+        resource_id: "$.id"
+    cleanup:
+      # This cleanup path needs resource_id but it won't be available
+      method: DELETE
+      path: /anything/{{resource_id}}
+      expected_status: [200]
